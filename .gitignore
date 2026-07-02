@@ -1,0 +1,6 @@
+cloudflared.exe
+*.exe
+dist/
+build/
+*.spec
+__pycache__/
