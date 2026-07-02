@@ -16,7 +16,7 @@ with open('client_template.py', 'r') as f:
 # Create a .py file for each person
 for person in people:
     modified = template.replace('EXE_NAME = "1"', f'EXE_NAME = "{person["name"]}"')
-    modified = modified.replace('GROUP_ID = "YOUR_GROUP_ID_HERE"', f'GROUP_ID = "{person["group_id"]}"')
+    modified = modified.replace('GROUP_ID = "-1003587821331"', f'GROUP_ID = "{person["group_id"]}"')
     
     filename = f'client_{person["name"]}.py'
     with open(filename, 'w') as f:

